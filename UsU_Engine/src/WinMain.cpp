@@ -9,6 +9,12 @@
 #include "Mesh.h"
 #include <vector>
 
+// Hint hybrid systems (NV/AMD) to use high-performance GPU
+extern "C" {
+  __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+  __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dxguid.lib")
@@ -16,29 +22,33 @@
 
 using Microsoft::WRL::ComPtr;
 
-// Globals
-static const UINT kFrameCount = 2;
-HWND g_hWnd = nullptr;
-UINT g_width = 1280;
-UINT g_height = 720;
+  // Globals
+  static const UINT kFrameCount = 2;
+  HWND g_hWnd = nullptr;
+  UINT g_width = 1280;
+  UINT g_height = 720;
 
 ComPtr<ID3D12Device> g_device;
 ComPtr<IDXGISwapChain3> g_swapChain;
 ComPtr<ID3D12CommandQueue> g_commandQueue;
-ComPtr<ID3D12DescriptorHeap> g_rtvHeap;
-UINT g_rtvDescriptorSize = 0;
-ComPtr<ID3D12Resource> g_renderTargets[kFrameCount];
-ComPtr<ID3D12CommandAllocator> g_commandAllocator;
-ComPtr<ID3D12GraphicsCommandList> g_commandList;
-ComPtr<ID3D12Fence> g_fence;
-UINT64 g_fenceValue = 0;
-HANDLE g_fenceEvent = nullptr;
-UINT g_frameIndex = 0;
+  ComPtr<ID3D12DescriptorHeap> g_rtvHeap;
+  UINT g_rtvDescriptorSize = 0;
+  ComPtr<ID3D12Resource> g_renderTargets[kFrameCount];
+  ComPtr<ID3D12CommandAllocator> g_commandAllocator;
+  ComPtr<ID3D12GraphicsCommandList> g_commandList;
+  ComPtr<ID3D12Fence> g_fence;
+  UINT64 g_fenceValue = 0;
+  HANDLE g_fenceEvent = nullptr;
+  UINT g_frameIndex = 0;
 
-// App-level renderer/mesh
-Renderer g_renderer;
-Mesh     g_mesh;
-
+  // App-level renderer/mesh
+  Renderer g_renderer;
+  Mesh     g_mesh;
+  // Model scale controlled by keyboard
+  float g_modelScale = 0.1f;
+  // Model yaw (Y-axis rotation) controlled by keyboard
+  float g_modelYaw = 0.0f;
+  // Model scale controlled by keyboard
 static std::wstring GetExecutableDir()
 {
     wchar_t path[MAX_PATH];
@@ -106,23 +116,57 @@ void SignalAndWaitForGPU() {
     }
 #endif
 
-    ComPtr<IDXGIFactory6> factory;
-    ThrowIfFailed(CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
+    ComPtr<IDXGIFactory6> factory6;
+    ComPtr<IDXGIFactory4> factory4;
+    HRESULT hrFactory = CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory6));
+    if (FAILED(hrFactory)) {
+      // Fallback to v4
+      dxgiFactoryFlags = 0;
+      ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory4)));
+      // Try upgrade to v6 for GPU preference API
+      factory4.As(&factory6);
+    } else {
+      // Also keep a v4 interface for swapchain/window association calls
+      factory6.As(&factory4);
+    }
 
     // Create device (pick first hardware adapter that supports D3D12)
     ComPtr<IDXGIAdapter1> adapter;
-    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
-      DXGI_ADAPTER_DESC1 desc = {};
-      adapter->GetDesc1(&desc);
-      if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
-      if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_device)))) {
-        break;
+    // Prefer high-performance GPU if available
+    if (factory6) {
+      for (UINT i = 0; ; ++i) {
+        ComPtr<IDXGIAdapter1> cand;
+        if (factory6->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&cand)) == DXGI_ERROR_NOT_FOUND) break;
+        DXGI_ADAPTER_DESC1 desc = {};
+        cand->GetDesc1(&desc);
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+        if (SUCCEEDED(D3D12CreateDevice(cand.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_device)))) { adapter = cand; break; }
       }
     }
+    // Fallback: enumerate all hardware adapters
+    if (!g_device && factory6) {
+      for (UINT i = 0; ; ++i) {
+        ComPtr<IDXGIAdapter1> cand;
+        if (factory6->EnumAdapters1(i, &cand) == DXGI_ERROR_NOT_FOUND) break;
+        DXGI_ADAPTER_DESC1 desc = {};
+        cand->GetDesc1(&desc);
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+        if (SUCCEEDED(D3D12CreateDevice(cand.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_device)))) { adapter = cand; break; }
+      }
+    }
+    // If still not created, abort instead of WARP fallback (force hardware)
     if (!g_device) {
-      ComPtr<IDXGIAdapter> warp;
-      ThrowIfFailed(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)));
-      ThrowIfFailed(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_device)));
+      // Could not create a hardware device
+      ThrowIfFailed(E_FAIL);
+    }
+
+    // Log chosen adapter name
+    if (adapter) {
+      DXGI_ADAPTER_DESC1 desc = {};
+      adapter->GetDesc1(&desc);
+      OutputDebugStringW(L"[DX12] Using adapter: ");
+      OutputDebugStringW(desc.Description);
+      OutputDebugStringW(L"\n");
     }
 
     // Command queue
@@ -142,8 +186,8 @@ void SignalAndWaitForGPU() {
     scDesc.SampleDesc.Count = 1;
 
     ComPtr<IDXGISwapChain1> swap1;
-    ThrowIfFailed(factory->CreateSwapChainForHwnd(g_commandQueue.Get(), g_hWnd, &scDesc, nullptr, nullptr, &swap1));
-    ThrowIfFailed(factory->MakeWindowAssociation(g_hWnd, DXGI_MWA_NO_ALT_ENTER));
+    ThrowIfFailed(factory4->CreateSwapChainForHwnd(g_commandQueue.Get(), g_hWnd, &scDesc, nullptr, nullptr, &swap1));
+    ThrowIfFailed(factory4->MakeWindowAssociation(g_hWnd, DXGI_MWA_NO_ALT_ENTER));
     ThrowIfFailed(swap1.As(&g_swapChain));
     g_frameIndex = g_swapChain->GetCurrentBackBufferIndex();
 
@@ -234,15 +278,15 @@ void SignalAndWaitForGPU() {
     g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
     // Clear to neutral dark gray for better contrast
-    float clearColor[] = { 0.1f, 0.1f, 0.12f, 1.0f };
+    float clearColor[] = { 0.0f, 0.0f, 1.0f, 1.0f };
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
     // Update MVP (world * view * proj)
     using namespace DirectX;
     XMMATRIX proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, (float)g_width / (float)g_height, 0.1f, 100.0f);
     XMMATRIX view = XMMatrixLookAtLH(XMVectorSet(0.0f, 0.0f, -2.0f, 1.0f), XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f), XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
-    // Slight scale to ensure prominence on screen
-    XMMATRIX world = XMMatrixScaling(0.03f, 0.03f, 0.03f);
+    // World = Rotation(Yaw) * Scale
+    XMMATRIX world = XMMatrixRotationY(g_modelYaw) * XMMatrixScaling(g_modelScale, g_modelScale, g_modelScale);
     XMFLOAT4X4 mvp;
     XMStoreFloat4x4(&mvp, XMMatrixTranspose(world * view * proj));
     g_renderer.UpdateCB(mvp);
@@ -274,6 +318,25 @@ void SignalAndWaitForGPU() {
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_KEYDOWN:
+        if (wParam == VK_UP) {
+            g_modelScale *= 1.1f; // increase scale
+            if (g_modelScale > 100.0f) g_modelScale = 100.0f;
+            return 0;
+        } else if (wParam == VK_DOWN) {
+            g_modelScale *= 0.9f; // decrease scale
+            if (g_modelScale < 0.001f) g_modelScale = 0.001f;
+            return 0;
+        } else if (wParam == VK_LEFT) {
+            g_modelYaw -= 0.1f; // rotate left (counter-clockwise)
+            if (g_modelYaw < -DirectX::XM_PI) g_modelYaw += DirectX::XM_2PI; // wrap
+            return 0;
+        } else if (wParam == VK_RIGHT) {
+            g_modelYaw += 0.1f; // rotate right (clockwise)
+            if (g_modelYaw > DirectX::XM_PI) g_modelYaw -= DirectX::XM_2PI; // wrap
+            return 0;
+        }
+        break;
     case WM_PAINT: {
         PAINTSTRUCT ps;
         BeginPaint(hWnd, &ps);
@@ -317,14 +380,14 @@ INT WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, INT nCmdShow) {
         PostQuitMessage(1);
         return 0;
     }
-    std::wstring exeDir = GetExecutableDir();
+    std::wstring exeDir = L"D:\\Personal\\project\\UsU_Engine\\UsU_Engine";//GetExecutableDir();
     std::wstring shaderPath = ResolveAssetPath(exeDir, L"src\\shaders.hlsl");
     if (!g_renderer.CreatePipeline(shaderPath.c_str())) {
         PostQuitMessage(1);
         return 0;
     }
     // Try load sample OBJ; fallback to triangle
-    std::wstring objPath = ResolveAssetPath(exeDir, L"assets\\mesh\\FinalBaseMesh.obj");
+    std::wstring objPath = ResolveAssetPath(exeDir, L"assets\\mesh\\Porsche_911_GT2.obj");
     if (!g_mesh.LoadOBJ(objPath)) {
         g_mesh.SetDefaultTriangle();
     }

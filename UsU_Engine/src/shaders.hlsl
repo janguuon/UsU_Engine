@@ -29,5 +29,6 @@ VSOut VSMain(VSIn input)
 float4 PSMain(VSOut input) : SV_Target
 {
     // Simple coloring based on UV
-    return float4(input.uv, 1.0f, 1.0f);
+    //return float4(input.uv, 1.0f, 1.0f);
+    return float4(1.0f, 0.0f, 1.0f, 1.0f);
 }
