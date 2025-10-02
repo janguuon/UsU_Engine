@@ -233,13 +233,18 @@ void SignalAndWaitForGPU() {
     // Bind render target
     g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-    // Clear to blue
-    float clearColor[] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    // Clear to neutral dark gray for better contrast
+    float clearColor[] = { 0.1f, 0.1f, 0.12f, 1.0f };
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
-    // Update simple MVP (identity)
-    DirectX::XMFLOAT4X4 mvp;
-    DirectX::XMStoreFloat4x4(&mvp, DirectX::XMMatrixIdentity());
+    // Update MVP (world * view * proj)
+    using namespace DirectX;
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, (float)g_width / (float)g_height, 0.1f, 100.0f);
+    XMMATRIX view = XMMatrixLookAtLH(XMVectorSet(0.0f, 0.0f, -2.0f, 1.0f), XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f), XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+    // Slight scale to ensure prominence on screen
+    XMMATRIX world = XMMatrixScaling(0.03f, 0.03f, 0.03f);
+    XMFLOAT4X4 mvp;
+    XMStoreFloat4x4(&mvp, XMMatrixTranspose(world * view * proj));
     g_renderer.UpdateCB(mvp);
 
     // Record draw
@@ -319,7 +324,7 @@ INT WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, INT nCmdShow) {
         return 0;
     }
     // Try load sample OBJ; fallback to triangle
-    std::wstring objPath = ResolveAssetPath(exeDir, L"assets\\mesh\\cube.obj");
+    std::wstring objPath = ResolveAssetPath(exeDir, L"assets\\mesh\\FinalBaseMesh.obj");
     if (!g_mesh.LoadOBJ(objPath)) {
         g_mesh.SetDefaultTriangle();
     }

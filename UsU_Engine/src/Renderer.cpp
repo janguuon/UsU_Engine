@@ -101,21 +101,20 @@ bool Renderer::CreatePipeline(const wchar_t* shaderFile)
     rtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
     rtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
     rtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    rtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
     rtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     blend.RenderTarget[0] = rtBlend;
     psoDesc.BlendState = blend;
     psoDesc.SampleMask = UINT_MAX;
     D3D12_RASTERIZER_DESC rast{};
     rast.FillMode = D3D12_FILL_MODE_SOLID;
-    rast.CullMode = D3D12_CULL_MODE_BACK;
+    // Disable culling to avoid missing faces due to OBJ winding differences
+    rast.CullMode = D3D12_CULL_MODE_NONE;
     rast.FrontCounterClockwise = FALSE;
     rast.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
     rast.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
     rast.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
     rast.DepthClipEnable = TRUE;
     rast.MultisampleEnable = FALSE;
-    rast.AntialiasedLineEnable = FALSE;
     rast.ForcedSampleCount = 0;
     rast.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
     psoDesc.RasterizerState = rast;
