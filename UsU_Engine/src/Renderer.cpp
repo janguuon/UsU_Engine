@@ -1,6 +1,9 @@
 #include "Renderer.h"
 #include <stdexcept>
 #include <windows.h>
+#include <wincodec.h>
+#include <vector>
+#pragma comment(lib, "ole32.lib")
 using namespace DirectX;
 
 bool Renderer::Initialize(ID3D12Device* device)
@@ -27,6 +30,14 @@ bool Renderer::Initialize(ID3D12Device* device)
 
     // Map once
     if (FAILED(m_cb->Map(0, nullptr, reinterpret_cast<void**>(&m_cbMapped))))
+        return false;
+
+    // Create SRV heap (1 descriptor, shader visible)
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+    heapDesc.NumDescriptors = 1;
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    if (FAILED(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvHeap))))
         return false;
 
     return true;
@@ -60,15 +71,45 @@ bool Renderer::CreatePipeline(const wchar_t* shaderFile)
         return false;
     }
 
-    // Root signature: one root CBV at b0
-    D3D12_ROOT_PARAMETER rp{};
-    rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rp.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    rp.Descriptor.ShaderRegister = 0; // b0
+    // Root signature: b0 (VS CBV) + t0 (PS SRV) and a static sampler s0
+    D3D12_DESCRIPTOR_RANGE srvRange{};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0; // t0
+    srvRange.RegisterSpace = 0;
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[2] = {};
+    // b0
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[0].Descriptor.ShaderRegister = 0;
+    // t0 table
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[1].DescriptorTable.NumDescriptorRanges = 1;
+    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+
+    D3D12_STATIC_SAMPLER_DESC samp{};
+    samp.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samp.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samp.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samp.MipLODBias = 0.0f;
+    samp.MaxAnisotropy = 1;
+    samp.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    samp.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    samp.MinLOD = 0.0f;
+    samp.MaxLOD = D3D12_FLOAT32_MAX;
+    samp.ShaderRegister = 0; // s0
+    samp.RegisterSpace = 0;
+    samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc{};
-    rsDesc.NumParameters = 1;
-    rsDesc.pParameters = &rp;
+    rsDesc.NumParameters = _countof(params);
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &samp;
     rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> sig, sigErr;
@@ -199,10 +240,87 @@ void Renderer::RecordDraw(ID3D12GraphicsCommandList* cmdList, UINT indexCount)
     D3D12_GPU_VIRTUAL_ADDRESS cbAddr = m_cb->GetGPUVirtualAddress();
     cmdList->SetGraphicsRootConstantBufferView(0, cbAddr);
 
+    // Descriptor heap for SRV and set t0 table
+    if (m_srvHeap) {
+        ID3D12DescriptorHeap* heaps[] = { m_srvHeap.Get() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+        cmdList->SetGraphicsRootDescriptorTable(1, m_srvHeap->GetGPUDescriptorHandleForHeapStart());
+    }
+
     // IA
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->IASetVertexBuffers(0, 1, &m_vbView);
     cmdList->IASetIndexBuffer(&m_ibView);
 
     cmdList->DrawIndexedInstanced(indexCount, 1, 0, 0, 0);
+}
+
+bool Renderer::LoadTexture(const std::wstring& filePath)
+{
+    // Initialize WIC
+    HRESULT hrCI = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    // RPC_E_CHANGED_MODE can be ignored; COM already initialized with different model
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))))
+        return false;
+
+    Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(wic->CreateDecoderFromFilename(filePath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder)))
+        return false;
+    Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+    if (FAILED(decoder->GetFrame(0, &frame))) return false;
+
+    Microsoft::WRL::ComPtr<IWICFormatConverter> conv;
+    if (FAILED(wic->CreateFormatConverter(&conv))) return false;
+    if (FAILED(conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom)))
+        return false;
+
+    UINT w = 0, h = 0;
+    conv->GetSize(&w, &h);
+    if (w == 0 || h == 0) return false;
+    const UINT stride = w * 4;
+    const UINT imageSize = stride * h;
+    std::vector<BYTE> pixels(imageSize);
+    if (FAILED(conv->CopyPixels(nullptr, stride, imageSize, pixels.data())))
+        return false;
+
+    // Create texture in UPLOAD heap (simplified)
+    D3D12_RESOURCE_DESC texDesc{};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width = w;
+    texDesc.Height = h;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    // For UPLOAD heap textures, layout must be ROW_MAJOR
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    Microsoft::WRL::ComPtr<ID3D12Resource> texture;
+    HRESULT hrTex = m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&texture));
+    if (FAILED(hrTex)) {
+        OutputDebugStringW(L"[DX12] CreateCommittedResource for texture failed\n");
+        return false;
+    }
+
+    // Write data
+    if (FAILED(texture->WriteToSubresource(0, nullptr, pixels.data(), stride, imageSize)))
+        return false;
+
+    // Create SRV
+    if (!m_srvHeap) return false;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    m_device->CreateShaderResourceView(texture.Get(), &srv, m_srvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    // Keep reference
+    m_texture = texture;
+    (void)hrCI; // silence unused if not needed
+    return true;
 }

@@ -396,6 +396,21 @@ INT WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, INT nCmdShow) {
         return 0;
     }
 
+    // Load skin texture: try common extensions
+    {
+        const std::wstring base = L"assets\\mesh\\skin00";
+        const std::wstring cands[] = {
+            ResolveAssetPath(exeDir, base + L".png"),
+            //ResolveAssetPath(exeDir, base + L".jpg"),
+            //ResolveAssetPath(exeDir, base + L".jpeg"),
+            ResolveAssetPath(exeDir, base + L".BMP")
+        };
+        for (const auto& p : cands) {
+            // Exists() checks files only; skip non-existing
+            if (Exists(p)) { g_renderer.LoadTexture(p); break; }
+        }
+    }
+
     // Main loop
     MSG msg = {};
     while (msg.message != WM_QUIT) {

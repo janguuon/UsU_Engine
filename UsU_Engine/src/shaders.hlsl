@@ -3,6 +3,9 @@ cbuffer PerObjectCB : register(b0)
     float4x4 gMVP;
 };
 
+Texture2D gTex : register(t0);
+SamplerState gSamp : register(s0);
+
 struct VSIn
 {
     float3 position : POSITION;
@@ -28,7 +31,7 @@ VSOut VSMain(VSIn input)
 
 float4 PSMain(VSOut input) : SV_Target
 {
-    // Simple coloring based on UV
-    //return float4(input.uv, 1.0f, 1.0f);
-    return float4(1.0f, 0.0f, 1.0f, 1.0f);
+    // Sample texture with provided UVs
+    float4 color = gTex.Sample(gSamp, input.uv);
+    return color;
 }
