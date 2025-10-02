@@ -1,0 +1,110 @@
+# C++ 프로젝트용 .gitignore 파일
+
+# 빌드 결과물 (가장 중요)
+# -------------------------
+# 오브젝트 파일 및 컴파일 중간 파일
+*.o
+*.obj
+*.lo
+*.la
+*.lis
+*.al
+*.gcda
+*.gcno
+*.gcov
+*.ol
+
+# 실행 파일
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+
+# 라이브러리 및 아카이브
+*.a
+*.lib
+
+# 디버깅 및 덤프 파일
+*.d
+*.dSYM/
+*.pdb
+*.ilk
+*.aps
+*.bsc
+*.sbr
+*.tds
+*.map
+
+# -------------------------
+# IDE 및 편집기 관련 파일
+# -------------------------
+
+# Visual Studio / Visual C++
+.vs/
+*.opensdf
+*.sdf
+*.suo
+*.user
+*.ncb
+*.rcproj
+*.sln.docstates
+*.vshost.*
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+build/
+bin/
+obj/
+ipch/
+*.vc.db
+*.vcxproj.user
+*.vcxproj.filters
+
+# Xcode (macOS/iOS)
+build/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.xcscmblueprint
+!default.xcscmblueprint
+*.xccheckout
+!default.xccheckout
+
+# Qt Creator
+*.pro.user
+*.kdev4
+*.kdev4.autosave
+
+# CLion
+.idea/
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# VS Code
+.vscode/
+
+# 기타 편집기/시스템 파일
+*~
+\#*
+.\#*
+*.bak
+*.swp
+*.log
+Thumbs.db
+.DS_Store
+
+# -------------------------
+# C/C++ 헤더/소스 백업 (선택 사항)
+# -------------------------
+# 주로 편집기에서 생성하는 백업 파일
+\#*\#
